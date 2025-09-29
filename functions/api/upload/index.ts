@@ -70,3 +70,15 @@ export const onRequestPost: PagesFunction<Env> = async (ctx) => {
     return Response.json({ error: err.message }, { status: 500 });
   }
 };
+const formData = await ctx.request.formData();
+
+console.log("FORMDATA:", [...formData.entries()]);
+
+const title = formData.get("title");
+const description = formData.get("description");
+const slot = formData.get("slot");
+const file = formData.get("file") as File;
+
+if (!title || !description || !slot || !file) {
+  return Response.json({ error: "Missing required fields", got: [...formData.keys()] }, { status: 400 });
+}
