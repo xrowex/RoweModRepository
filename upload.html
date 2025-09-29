@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Upload a Mod</title>
+</head>
+<body>
+  <h1>Upload Your Mod</h1>
+  <form id="upload-form" enctype="multipart/form-data" method="POST" action="/api/upload">
+    <label>Title: <input type="text" name="title" required /></label><br/>
+    <label>Description: <textarea name="description" required></textarea></label><br/>
+    <label>Slot:
+      <select name="slot" required>
+        <option value="Hat">Hat</option>
+        <option value="Body">Body</option>
+        <option value="Shoes">Shoes</option>
+      </select>
+    </label><br/>
+    <label>File: <input type="file" name="file" required /></label><br/>
+    <button type="submit">Upload</button>
+  </form>
+</body>
+</html>
