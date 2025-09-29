@@ -14,6 +14,10 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
   const limitRaw = parseInt(url.searchParams.get("limit") || "24", 10);
   const limit    = Number.isFinite(limitRaw) ? Math.max(1, Math.min(limitRaw, 48)) : 24;
   const cursor   = url.searchParams.get("cursor");                    // numeric mod id for "id < cursor"
+  const tags     = url.searchParams
+    .getAll("tag")
+    .map((tag) => tag.trim())
+    .filter(Boolean);
 
   const where: string[] = [];
   const params: any[] = [];
@@ -31,9 +35,23 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
     params.push(...slots);
   }
 
+  // tag filter (mods must include all requested tags)
+  if (tags.length) {
+    where.push(
+      `m.id IN (
+        SELECT mt.mod_id
+        FROM mod_tags mt
+        JOIN tags t ON t.id = mt.tag_id
+        WHERE LOWER(t.name) IN (${placeholders(tags.length)})
+        GROUP BY mt.mod_id
+        HAVING COUNT(DISTINCT LOWER(t.name)) = ?
+      )`
+    );
+    params.push(...tags.map((tag) => tag.toLowerCase()), tags.length);
+  }
+
   // date window based on latest version time
   // we compute latest per mod via CTE and then filter with SQLite datetime
-  let dateFilter = "";
   if (date) {
     const daysMap: Record<string, number> = {
       last_day: 1,
@@ -44,8 +62,8 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
     };
     const days = daysMap[date];
     if (days) {
-      // filter later using l.last_version_at >= datetime('now', '-X days')
-      dateFilter = `AND l.last_version_at >= datetime('now', ?)`
+      // push onto the WHERE clause chain so we don't end up with an orphaned AND
+      where.push("l.last_version_at >= datetime('now', ?)");
       params.push(`-${days} days`);
     }
   }
@@ -67,7 +85,7 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
     orderBy = `ORDER BY m.title COLLATE NOCASE ASC`;
   } else if (sort === "trending") {
     // simple "newer first" proxy; replace with a real hotness score later
-    orderBy = `ORDER BY (julianday('now') - julianday(l.last_version_at)) ASC`;
+    orderBy = `ORDER BY CASE WHEN l.last_version_at IS NULL THEN 1 ELSE 0 END, (julianday('now') - julianday(l.last_version_at)) ASC`;
   }
 
   const sql = `
@@ -84,12 +102,21 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
       m.slot,
       c.handle AS creator,
       l.last_version_at,
-      (SELECT COUNT(*) FROM mod_versions v WHERE v.mod_id = m.id) AS version_count
+      (SELECT COUNT(*) FROM mod_versions v WHERE v.mod_id = m.id) AS version_count,
+      (
+        SELECT GROUP_CONCAT(name, ',')
+        FROM (
+          SELECT DISTINCT t.name AS name
+          FROM mod_tags mt
+          JOIN tags t ON t.id = mt.tag_id
+          WHERE mt.mod_id = m.id
+          ORDER BY name COLLATE NOCASE
+        )
+      ) AS tags
     FROM mods m
     JOIN creators c ON c.id = m.creator_id
     LEFT JOIN latest l ON l.mod_id = m.id
     ${whereClause}
-    ${dateFilter}
     ${orderBy}
     LIMIT ?
   `;
@@ -106,5 +133,12 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
     items = results.slice(0, limit);
   }
 
-  return Response.json({ items, nextCursor });
+  const normalized = (items as any[]).map((row) => ({
+    ...row,
+    tags: typeof row.tags === "string" && row.tags.length
+      ? (row.tags as string).split(",").map((tag) => tag.trim()).filter(Boolean)
+      : [],
+  }));
+
+  return Response.json({ items: normalized, nextCursor });
 };
