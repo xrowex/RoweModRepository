@@ -1,84 +1,68 @@
 // functions/api/upload/index.ts
-import { randomUUID } from "crypto";
-
 type Env = {
   DB: D1Database;
   BUNDLES: R2Bucket;
 };
 
-export const onRequestGet: PagesFunction<Env> = async () => {
-  return new Response("Upload endpoint ready ✅", { status: 200 });
-};
-
 export const onRequestPost: PagesFunction<Env> = async (ctx) => {
   try {
     const formData = await ctx.request.formData();
-    const creator = formData.get("creator")?.toString() || "";
-    const title = formData.get("title")?.toString() || "";
-    const description = formData.get("description")?.toString() || "";
-    const slot = formData.get("slot")?.toString() || "";
-    const file = formData.get("file") as File;
 
-    if (!creator || !title || !slot || !file) {
-      return Response.json({ error: "Missing required fields" }, { status: 400 });
-    }
+    // Grab form fields
+    const title = formData.get("title")?.toString();
+    const description = formData.get("description")?.toString();
+    const slot = formData.get("slot")?.toString();
+    const creator = formData.get("creator")?.toString();
+    const file = formData.get("file") as File | null;
 
-    // Make a slug + version ID
-    const slug = `${slot.toLowerCase()}-${randomUUID().slice(0, 8)}`;
-    const version = "1.0.0";
-
-    // Upload file to R2
-    const key = `${slot.toLowerCase()}/${slug}/${file.name}`;
-    await ctx.env.BUNDLES.put(key, await file.arrayBuffer(), {
-      httpMetadata: { contentType: file.type },
+    // Debug log (remove in production)
+    console.log("Got fields:", {
+      title,
+      description,
+      slot,
+      creator,
+      file: file ? file.name : null,
     });
 
-    // Insert creator if not exists
-    await ctx.env.DB.prepare(
-      "INSERT OR IGNORE INTO creators (handle, is_verified) VALUES (?, ?)"
-    ).bind(creator, 0).run();
-
-    // Get creator id
-    const creatorRow = await ctx.env.DB
-      .prepare("SELECT id FROM creators WHERE handle = ?")
-      .bind(creator)
-      .first<{ id: number }>();
-
-    if (!creatorRow) {
-      return Response.json({ error: "Could not find creator after insert" }, { status: 500 });
+    // Validate required fields
+    if (!title || !description || !slot || !creator || !file) {
+      return Response.json(
+        { error: "Missing required fields", got: [...formData.keys()] },
+        { status: 400 }
+      );
     }
 
-    // Insert mod
-    const modResult = await ctx.env.DB.prepare(
-      "INSERT INTO mods (creator_id, slug, title, description, slot) VALUES (?, ?, ?, ?, ?)"
-    ).bind(creatorRow.id, slug, title, description, slot).run();
+    // Generate slug from title (lowercase + dash)
+    const slug = title.toLowerCase().replace(/\s+/g, "-");
 
-    const modId = modResult.lastRowId;
+    // Upload file to R2
+    const fileKey = `${slot.toLowerCase()}/${slug}/${file.name}`;
+    await ctx.env.BUNDLES.put(fileKey, file.stream());
 
-    // Insert version
+    // Insert into DB
+    const createdAt = new Date().toISOString();
     await ctx.env.DB.prepare(
-      "INSERT INTO mod_versions (mod_id, version, r2_key, file_size, changelog, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))"
-    ).bind(modId, version, key, file.size, "Initial upload").run();
+      `INSERT INTO mods (creator_id, slug, title, description, slot) 
+       VALUES ((SELECT id FROM creators WHERE handle=?), ?, ?, ?, ?)`
+    )
+      .bind(creator, slug, title, description, slot)
+      .run();
+
+    await ctx.env.DB.prepare(
+      `INSERT INTO mod_versions (mod_id, version, r2_key, file_size, changelog, created_at)
+       VALUES ((SELECT id FROM mods WHERE slug=?), ?, ?, ?, ?, ?)`
+    )
+      .bind(slug, "1.0.0", fileKey, file.size, "Initial upload", createdAt)
+      .run();
 
     return Response.json({
       success: true,
+      message: "Mod uploaded successfully",
       slug,
-      r2_key: key,
-      file_size: file.size,
+      fileKey,
     });
-  } catch (err: any) {
-    return Response.json({ error: err.message }, { status: 500 });
+  } catch (err) {
+    console.error(err);
+    return Response.json({ error: "Upload failed", details: String(err) }, { status: 500 });
   }
 };
-const formData = await ctx.request.formData();
-
-console.log("FORMDATA:", [...formData.entries()]);
-
-const title = formData.get("title");
-const description = formData.get("description");
-const slot = formData.get("slot");
-const file = formData.get("file") as File;
-
-if (!title || !description || !slot || !file) {
-  return Response.json({ error: "Missing required fields", got: [...formData.keys()] }, { status: 400 });
-}
