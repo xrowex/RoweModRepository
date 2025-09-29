@@ -40,3 +40,4 @@ CREATE TABLE IF NOT EXISTS mod_tags (
   FOREIGN KEY (mod_id) REFERENCES mods(id),
   FOREIGN KEY (tag_id) REFERENCES tags(id)
 );
+ 
