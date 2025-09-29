@@ -5,7 +5,7 @@ compatibility_date = "2025-09-01"
 [[d1_databases]]
 binding = "DB"
 database_name = "rowemod"
-database_id = "<your-d1-database-id>"
+database_id = "439d8718-15d4-466b-b1de-5d572f9d775a"
 
 # Bind R2 (public bucket for downloads; uploads via presigned URLs)
 [[r2_buckets]]
