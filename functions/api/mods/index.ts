@@ -33,7 +33,6 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
 
   // date window based on latest version time
   // we compute latest per mod via CTE and then filter with SQLite datetime
-  let dateFilter = "";
   if (date) {
     const daysMap: Record<string, number> = {
       last_day: 1,
@@ -44,8 +43,8 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
     };
     const days = daysMap[date];
     if (days) {
-      // filter later using l.last_version_at >= datetime('now', '-X days')
-      dateFilter = `AND l.last_version_at >= datetime('now', ?)`
+      // push onto the WHERE clause chain so we don't end up with an orphaned AND
+      where.push("l.last_version_at >= datetime('now', ?)");
       params.push(`-${days} days`);
     }
   }
@@ -67,7 +66,7 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
     orderBy = `ORDER BY m.title COLLATE NOCASE ASC`;
   } else if (sort === "trending") {
     // simple "newer first" proxy; replace with a real hotness score later
-    orderBy = `ORDER BY (julianday('now') - julianday(l.last_version_at)) ASC`;
+    orderBy = `ORDER BY CASE WHEN l.last_version_at IS NULL THEN 1 ELSE 0 END, (julianday('now') - julianday(l.last_version_at)) ASC`;
   }
 
   const sql = `
@@ -89,7 +88,6 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
     JOIN creators c ON c.id = m.creator_id
     LEFT JOIN latest l ON l.mod_id = m.id
     ${whereClause}
-    ${dateFilter}
     ${orderBy}
     LIMIT ?
   `;
