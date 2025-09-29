@@ -61,19 +61,45 @@
 
   <script>
     async function loadMods() {
-      try {
-        const res = await fetch('/api/mods');
-        const mods = await res.json();
+      const container = document.getElementById('mod-list');
 
-        const container = document.getElementById('mod-list');
+      try {
+        const allMods = [];
+        let cursor = null;
+
+        do {
+          const params = new URLSearchParams({ limit: '48' });
+          if (cursor) {
+            params.set('cursor', String(cursor));
+          }
+
+          const response = await fetch(`/api/mods?${params.toString()}`);
+          if (!response.ok) {
+            throw new Error(`Failed to load mods: ${response.status}`);
+          }
+
+          const payload = await response.json();
+          const items = Array.isArray(payload) ? payload : payload.items || [];
+          if (!Array.isArray(items)) {
+            throw new Error('Unexpected response payload');
+          }
+
+          allMods.push(...items);
+          cursor = payload && typeof payload.nextCursor === 'number' ? payload.nextCursor : null;
+
+          if (items.length === 0) {
+            cursor = null;
+          }
+        } while (cursor);
+
         container.innerHTML = '';
 
-        if (mods.length === 0) {
+        if (allMods.length === 0) {
           container.textContent = 'No mods published yet.';
           return;
         }
 
-        mods.forEach(mod => {
+        allMods.forEach((mod) => {
           const card = document.createElement('div');
           card.className = 'card';
 
@@ -87,7 +113,7 @@
           container.appendChild(card);
         });
       } catch (err) {
-        document.getElementById('mod-list').textContent = 'Failed to load mods 😢';
+        container.textContent = 'Failed to load mods 😢';
         console.error(err);
       }
     }
