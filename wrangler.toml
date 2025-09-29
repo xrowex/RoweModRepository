@@ -1,0 +1,13 @@
+name = "rowemod-site"
+compatibility_date = "2025-09-01"
+
+# Bind D1 (rename "DB" if you prefer)
+[[d1_databases]]
+binding = "DB"
+database_name = "rowemod"
+database_id = "<your-d1-database-id>"
+
+# Bind R2 (public bucket for downloads; uploads via presigned URLs)
+[[r2_buckets]]
+binding = "BUNDLES"
+bucket_name = "rowemod-bundles"
