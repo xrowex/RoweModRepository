@@ -5,11 +5,12 @@ type Env = {
 };
 
 const ALLOWED_SLOTS = new Set([
-  "Body","Bottoms","Bust","Eyes","Gloves","Hair","Hat","Shoes","Socks","Top","Presets",
+  "Body", "Bottoms", "Bust", "Eyes", "Gloves",
+  "Hair", "Hat", "Shoes", "Socks", "Top", "Presets",
 ]);
 
 function slugifyTitle(input: string) {
-  return input
+  return (input || "")
     .toLowerCase()
     .normalize("NFKD")
     .replace(/[\u0300-\u036f]/g, "")
@@ -35,68 +36,105 @@ async function ensureUniqueSlug(db: D1Database, baseSlug: string) {
 
 export const onRequestPost: PagesFunction<Env> = async (ctx) => {
   try {
-    const formData = await ctx.request.formData();
+    // ---- Parse form
+    const form = await ctx.request.formData();
+    const title = form.get("title")?.toString().trim();
+    const description = form.get("description")?.toString().trim();
+    const slot = form.get("slot")?.toString().trim();
+    const creator = form.get("creator")?.toString().trim();
+    const file = form.get("file") as File | null;
 
-    const title   = formData.get("title")?.toString();
-    const desc    = formData.get("description")?.toString();
-    const slotRaw = formData.get("slot")?.toString();
-    const creator = formData.get("creator")?.toString();
-    const file    = formData.get("file") as File | null;
+    console.log("Upload received:", { title, slot, creator, fileName: file?.name, size: file?.size });
 
-    const slot = slotRaw?.trim();
-
-    if (!title || !desc || !slot || !creator || !file) {
-      return Response.json({ error: "Missing required fields", got: [...formData.keys()] }, { status: 400 });
+    if (!title || !description || !slot || !creator || !file) {
+      return Response.json({ error: "Missing required fields" }, { status: 400 });
     }
     if (!ALLOWED_SLOTS.has(slot)) {
       return Response.json({ error: `Invalid slot '${slot}'` }, { status: 400 });
     }
-    if (file.size === 0) {
+    if (file.size <= 0) {
       return Response.json({ error: "File is empty" }, { status: 400 });
     }
 
     const db = ctx.env.DB;
 
-    // find creator
-    const creatorRow = await db.prepare(`SELECT id FROM creators WHERE handle = ?`).bind(creator).first<{id:number}>();
+    // ---- Resolve creator
+    const creatorRow = await db
+      .prepare(`SELECT id FROM creators WHERE handle = ?`)
+      .bind(creator)
+      .first<{ id: number }>();
+
+    console.log("Creator lookup:", creatorRow);
+
     if (!creatorRow) {
       return Response.json({ error: `Unknown creator handle '${creator}'` }, { status: 400 });
     }
 
-    // slug + R2 key
+    // ---- Slug
     const baseSlug = slugifyTitle(title) || `mod-${Date.now().toString(36)}`;
-    const slug     = await ensureUniqueSlug(db, baseSlug);
-    const fileKey  = `${slot.toLowerCase()}/${slug}/${file.name}`;
+    const slug = await ensureUniqueSlug(db, baseSlug);
+    console.log("Slug chosen:", { baseSlug, slug });
 
-    // upload to R2 (set contentType if available)
-    await ctx.env.BUNDLES.put(fileKey, file.stream(), {
+    // ---- R2 PUT (arrayBuffer)
+    const bytes = await file.arrayBuffer();
+    const fileKey = `${slot.toLowerCase()}/${slug}/${file.name}`;
+    console.log("Putting to R2:", { fileKey, size: bytes.byteLength, contentType: file.type });
+
+    const putRes = await ctx.env.BUNDLES.put(fileKey, bytes, {
       httpMetadata: { contentType: file.type || "application/octet-stream" },
     });
 
-    // insert mod
-    await db.prepare(
-      `INSERT INTO mods (creator_id, slug, title, description, slot)
-       VALUES (?, ?, ?, ?, ?)`
-    ).bind(creatorRow.id, slug, title, desc, slot).run();
+    if (!putRes) {
+      console.error("R2 put returned null");
+      return Response.json({ error: "R2 upload failed" }, { status: 500 });
+    }
+    console.log("R2 put OK:", putRes);
 
-    // get mod id
-    const modRow = await db.prepare(`SELECT id FROM mods WHERE slug = ?`).bind(slug).first<{id:number}>();
-    if (!modRow) throw new Error("Failed to load inserted mod");
+    // ---- Insert into mods
+    const createdAt = new Date().toISOString();
+    const modInsert = await db
+      .prepare(
+        `INSERT INTO mods (creator_id, slug, title, description, slot)
+         VALUES (?, ?, ?, ?, ?)`
+      )
+      .bind(creatorRow.id, slug, title, description, slot)
+      .run();
 
-    // insert first version with SQLite timestamp format
-    await db.prepare(
-      `INSERT INTO mod_versions (mod_id, version, r2_key, file_size, changelog, created_at)
-       VALUES (?, ?, ?, ?, ?, datetime('now'))`
-    ).bind(modRow.id, "1.0.0", fileKey, file.size, "Initial upload").run();
+    console.log("mods insert:", modInsert);
+
+    // fetch mod id
+    const modRow = await db
+      .prepare(`SELECT id FROM mods WHERE slug = ?`)
+      .bind(slug)
+      .first<{ id: number }>();
+
+    console.log("Inserted mod row:", modRow);
+
+    if (!modRow) {
+      console.error("Failed to read back inserted mod");
+      return Response.json({ error: "Failed to create mod" }, { status: 500 });
+    }
+
+    // ---- Insert into mod_versions
+    const verInsert = await db
+      .prepare(
+        `INSERT INTO mod_versions (mod_id, version, r2_key, file_size, changelog, created_at)
+         VALUES (?, ?, ?, ?, ?, datetime('now'))`
+      )
+      .bind(modRow.id, "1.0.0", fileKey, file.size, "Initial upload")
+      .run();
+
+    console.log("mod_versions insert:", verInsert);
 
     return Response.json({
       success: true,
       message: "Mod uploaded successfully",
       slug,
       fileKey,
+      size: file.size,
     });
-  } catch (err) {
-    console.error(err);
+  } catch (err: any) {
+    console.error("Upload failed:", err?.stack || err);
     return Response.json({ error: "Upload failed", details: String(err) }, { status: 500 });
   }
 };
